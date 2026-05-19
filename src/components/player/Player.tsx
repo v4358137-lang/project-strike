@@ -110,13 +110,17 @@ export const Player = () => {
     <RigidBody
       ref={rigidBody}
       colliders={false}
-      mass={1}
+      mass={80}
       type="dynamic"
       position={[0, 3, 0]}
       enabledRotations={[false, false, false]}
       canSleep={false}
+      linearDamping={2}
+      angularDamping={100}
+      friction={0.8}
+      restitution={0}
     >
-      <CapsuleCollider args={[0.5, 0.5]} />
+      <CapsuleCollider args={[0.5, 0.5]} friction={1} restitution={0} />
     </RigidBody>
   );
 };
