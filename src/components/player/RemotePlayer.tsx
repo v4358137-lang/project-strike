@@ -6,7 +6,7 @@ import { SkeletonUtils } from 'three-stdlib';
 import * as THREE from 'three';
 import { useNetworkStore, type RemotePlayerState } from '../../store/useNetworkStore';
 import { WEAPONS } from '../weapons/WeaponManager';
-import { findBones, applyProceduralAnimation, type BoneSet } from './ProceduralAnimator';
+import { getMovementBob } from './ProceduralAnimator';
 
 const CHARACTER_MODELS = [
   '/models/characters/hero__character.glb',
@@ -14,7 +14,6 @@ const CHARACTER_MODELS = [
   '/models/characters/grapple_pilot.glb',
 ];
 
-// Character stands 1.75 m tall. Physics capsule centre → feet = 1.0 unit.
 const TARGET_HEIGHT = 1.75;
 const FOOT_OFFSET   = 1.0; // capsule halfHeight(0.5) + radius(0.5)
 
@@ -24,7 +23,7 @@ function stableIdx(id: string, n: number) {
   return h % n;
 }
 
-// ── Weapon held at right shoulder ─────────────────────────────────────────────
+// ── Weapon held at chest/shoulder ─────────────────────────────────────────────
 const HandWeapon = ({ weaponIdx }: { weaponIdx: number }) => {
   const w = WEAPONS[weaponIdx % WEAPONS.length];
   const { scene } = useGLTF(w.modelPath) as { scene: THREE.Group };
@@ -34,34 +33,25 @@ const HandWeapon = ({ weaponIdx }: { weaponIdx: number }) => {
     c.updateMatrixWorld(true);
     const box    = new THREE.Box3().setFromObject(c);
     const maxDim = Math.max(...box.getSize(new THREE.Vector3()).toArray());
-    // Scale to realistic rifle length (~65 cm)
-    if (maxDim > 0) c.scale.setScalar(0.65 / maxDim);
+    if (maxDim > 0) c.scale.setScalar(0.60 / maxDim);
     return c;
   }, [scene]);
 
-  // Position relative to the FOOT-LEVEL group:
-  // • X = 0.18 → slightly right of centre
-  // • Y = 1.28 → shoulder / chest height above feet
-  // • Z = -0.05 → slightly forward
-  // • Rotation: barrel points forward (character faces -Z after rotY=0)
   return (
-    <group position={[0.18, 1.28, -0.05]} rotation={[0.1, Math.PI, 0.05]}>
+    <group position={[0.14, 1.20, -0.02]} rotation={[-0.05, Math.PI, -0.05]}>
       <primitive object={clone} />
     </group>
   );
 };
 
-// ── Individual remote player ──────────────────────────────────────────────────
+// ── Individual remote player ───────────────────────────────────────────────────
 const RemotePlayerMesh = ({
   player, charIdx,
 }: { player: RemotePlayerState; charIdx: number }) => {
 
-  const groupRef    = useRef<THREE.Group>(null);
-  const animRef     = useRef<THREE.Group>(null);
-  const bonesRef    = useRef<BoneSet | null>(null);
-  const hasClipsRef = useRef(false);
+  const groupRef = useRef<THREE.Group>(null);
+  const animRef  = useRef<THREE.Group>(null);
 
-  // World Y for the group = capsule-centre minus foot-offset
   const footWorldY = (cy: number) => cy - FOOT_OFFSET;
 
   const targetPos  = useRef(new THREE.Vector3(
@@ -74,51 +64,40 @@ const RemotePlayerMesh = ({
     animations: THREE.AnimationClip[];
   };
 
-  // ── Clone & prepare (runs once per player per character model) ────────────
+  // ── Clone: SkeletonUtils shares material refs → original colours preserved ─
   const clonedScene = useMemo(() => {
     const clone = SkeletonUtils.clone(scene) as THREE.Group;
 
-    // 1. Scale to human height
+    // Scale to 1.75 m
     clone.updateMatrixWorld(true);
     const box1 = new THREE.Box3().setFromObject(clone);
     const h    = box1.getSize(new THREE.Vector3()).y;
     if (h > 0) clone.scale.setScalar(TARGET_HEIGHT / h);
 
-    // 2. Measure feet position and set clone.position.y so feet are at Y = 0
-    //    IMPORTANT: set on clone directly so ALL children (even detached meshes)
-    //    are lifted together — prevents the split-head / floating-head bug.
+    // Lift so feet are at local Y = 0 (applied to whole clone → no split body)
     clone.updateMatrixWorld(true);
     const box2 = new THREE.Box3().setFromObject(clone);
-    clone.position.y = -box2.min.y; // lift everything so feet → local Y 0
+    clone.position.y = -box2.min.y;
 
-    // 3. Fix materials so textures show correctly
+    // Tag for raycasting only — NEVER clone or replace materials here
     clone.traverse(child => {
       const mesh = child as THREE.Mesh;
       if (!mesh.isMesh) return;
-      mesh.userData['playerId'] = player.id; // raycast tag
-      mesh.castShadow = mesh.receiveShadow = true;
-      const fix = (m: THREE.Material): THREE.Material => {
-        const c = m.clone(); c.needsUpdate = true; return c;
-      };
-      mesh.material = Array.isArray(mesh.material)
-        ? mesh.material.map(fix)
-        : fix(mesh.material as THREE.Material);
+      mesh.userData['playerId'] = player.id;
+      mesh.castShadow    = true;
+      mesh.receiveShadow = true;
+      mesh.frustumCulled = false;
     });
 
     return clone;
   }, [scene, player.id]);
 
-  // ── Animations: GLB clips first, procedural fallback ─────────────────────
+  // ── Embedded GLB animation clips (play if available) ─────────────────────
   const { actions } = useAnimations(animations, animRef);
 
   useEffect(() => {
     const clipNames = Object.keys(actions);
-    hasClipsRef.current = clipNames.length > 0;
-
-    if (!hasClipsRef.current) {
-      bonesRef.current = findBones(clonedScene);
-      return;
-    }
+    if (!clipNames.length) return; // no clips → rest pose, group bob handles feel
 
     const find = (...kws: string[]) =>
       kws.reduce<string | undefined>(
@@ -127,35 +106,45 @@ const RemotePlayerMesh = ({
       ) ?? clipNames[0];
 
     const clip =
-      player.action === 'running'    ? find('run', 'sprint', 'jog')    :
-      player.action === 'walking'    ? find('walk', 'move')             :
-      player.action === 'shooting'   ? find('shoot', 'fire', 'attack')  :
-      player.action === 'crouching'  ? find('crouch', 'duck')           :
-      player.action === 'jumping'    ? find('jump', 'leap')             :
-                                       find('idle', 'stand', 'breath');
+      player.action === 'running'   ? find('run', 'sprint', 'jog')   :
+      player.action === 'walking'   ? find('walk', 'move')            :
+      player.action === 'shooting'  ? find('shoot', 'fire', 'attack') :
+      player.action === 'crouching' ? find('crouch', 'duck')          :
+      player.action === 'jumping'   ? find('jump', 'leap')            :
+                                      find('idle', 'stand', 'breath');
 
     const next = actions[clip];
     if (!next) return;
-    Object.values(actions).forEach(ac => ac?.fadeOut(0.22));
-    next.reset().fadeIn(0.22).play();
+    Object.values(actions).forEach(ac => ac?.fadeOut(0.25));
+    next.reset().fadeIn(0.25).play();
     next.setLoop(THREE.LoopRepeat, Infinity);
-    return () => { next.fadeOut(0.18); };
-  }, [player.action, actions, animations, clonedScene]);
+    return () => { next.fadeOut(0.2); };
+  }, [player.action, actions]);
 
-  // ── Per-frame: procedural bones OR interpolation ──────────────────────────
+  // ── Per-frame: group-level bob + interpolation ────────────────────────────
   useFrame(({ clock }, delta) => {
-    if (!hasClipsRef.current && bonesRef.current) {
-      applyProceduralAnimation(bonesRef.current, player.action, clock.getElapsedTime(), delta);
-    }
     if (!groupRef.current) return;
+
+    // Safe body-bob at GROUP level (no bones touched — avoids twisted characters)
+    const bob = getMovementBob(player.action, clock.getElapsedTime());
+
+    // Smooth XZ interpolation
     const al = Math.min(delta * 18, 1);
-    groupRef.current.position.lerp(targetPos.current, al);
+    groupRef.current.position.x = THREE.MathUtils.lerp(
+      groupRef.current.position.x, targetPos.current.x, al,
+    );
+    groupRef.current.position.z = THREE.MathUtils.lerp(
+      groupRef.current.position.z, targetPos.current.z, al,
+    );
+    // Y includes the movement bob
+    groupRef.current.position.y = THREE.MathUtils.lerp(
+      groupRef.current.position.y, targetPos.current.y + bob, al,
+    );
     groupRef.current.rotation.y = THREE.MathUtils.lerp(
       groupRef.current.rotation.y, targetRotY.current, al,
     );
   });
 
-  // Update targets when server state changes
   useEffect(() => {
     targetPos.current.set(
       player.position[0], footWorldY(player.position[1]), player.position[2],
@@ -169,42 +158,32 @@ const RemotePlayerMesh = ({
   const hCol = hp > 0.5 ? '#2dc653' : hp > 0.25 ? '#f4a261' : '#e63946';
 
   return (
-    // Group sits at foot level (capsule-centre − 1.0)
     <group
       ref={groupRef}
       position={[player.position[0], footWorldY(player.position[1]), player.position[2]]}
     >
-      {/* animRef wraps clonedScene — mixer finds all bones inside this subtree.
-          clonedScene.position.y already includes the foot-lift so NO separate
-          child-group offset is needed → prevents body-part separation. */}
       <group ref={animRef}>
         <primitive object={clonedScene} />
       </group>
 
-      {/* Weapon — positioned relative to foot-level group at shoulder height */}
       <HandWeapon weaponIdx={player.weaponIdx} />
 
-      {/* Name tag + health bar, always faces camera */}
-      <Billboard follow position={[0, TARGET_HEIGHT + 0.4, 0]}>
+      <Billboard follow position={[0, TARGET_HEIGHT + 0.42, 0]}>
         <Text
           fontSize={0.15}
           color="#ffffff"
           anchorX="center"
           anchorY="bottom"
-          outlineWidth={0.011}
-          outlineColor="#000"
-          position={[0, 0.11, 0]}
+          outlineWidth={0.012}
+          outlineColor="#000000"
+          position={[0, 0.12, 0]}
         >
           {player.name?.trim() || player.id.slice(0, 6).toUpperCase()}
         </Text>
-
-        {/* Health bar bg */}
         <mesh>
           <planeGeometry args={[0.65, 0.065]} />
-          <meshBasicMaterial color="#111" transparent opacity={0.82} />
+          <meshBasicMaterial color="#111111" transparent opacity={0.82} />
         </mesh>
-
-        {/* Health fill */}
         <mesh position={[-(0.325 - 0.65 * hp / 2), 0, 0.001]}>
           <planeGeometry args={[0.65 * hp, 0.065]} />
           <meshBasicMaterial color={hCol} />
@@ -214,7 +193,6 @@ const RemotePlayerMesh = ({
   );
 };
 
-// ── Container ─────────────────────────────────────────────────────────────────
 export const RemotePlayers = () => {
   const remote = useNetworkStore(s => s.remotePlayers);
   return (
