@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useInputStore } from '../../store/useInputStore';
 import { useGameStore } from '../../store/useGameStore';
-import { WeaponModel } from './WeaponModel.tsx';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useNetworkStore } from '../../store/useNetworkStore';
 import * as THREE from 'three';
@@ -139,9 +138,7 @@ export const WeaponManager = () => {
     }
   });
 
-  return (
-    <group>
-      <WeaponModel weapon={currentWeapon} isReloading={isReloading} isShooting={shoot && ammo > 0} />
-    </group>
-  );
+  // Weapon mesh is rendered on the character model (Player.tsx / RemotePlayer.tsx).
+  // WeaponManager only owns: shooting raycasts, ammo, reload, weapon switching.
+  return null;
 };
