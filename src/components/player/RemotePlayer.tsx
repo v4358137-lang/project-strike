@@ -6,7 +6,10 @@ import { SkeletonUtils } from 'three-stdlib';
 import * as THREE from 'three';
 import { useNetworkStore, type RemotePlayerState } from '../../store/useNetworkStore';
 import { WEAPONS } from '../weapons/WeaponManager';
-import { getMovementBob } from './ProceduralAnimator';
+import {
+  findBones, captureRestPoses, applyProceduralAnimation, getMovementBob,
+  type BoneSet, type RestPoses,
+} from './ProceduralAnimator';
 
 const CHARACTER_MODELS = [
   '/models/characters/hero__character.glb',
@@ -14,8 +17,10 @@ const CHARACTER_MODELS = [
   '/models/characters/grapple_pilot.glb',
 ];
 
+// All characters scaled to this height via bounding-box normalisation
 const TARGET_HEIGHT = 1.75;
-const FOOT_OFFSET   = 1.0; // capsule halfHeight(0.5) + radius(0.5)
+// Capsule: halfHeight=0.5 + radius=0.5 → feet are 1.0 below capsule centre
+const FOOT_OFFSET   = 1.0;
 
 function stableIdx(id: string, n: number) {
   let h = 0;
@@ -23,7 +28,7 @@ function stableIdx(id: string, n: number) {
   return h % n;
 }
 
-// ── Weapon held at chest/shoulder ─────────────────────────────────────────────
+// ── Weapon held at shoulder ────────────────────────────────────────────────────
 const HandWeapon = ({ weaponIdx }: { weaponIdx: number }) => {
   const w = WEAPONS[weaponIdx % WEAPONS.length];
   const { scene } = useGLTF(w.modelPath) as { scene: THREE.Group };
@@ -49,37 +54,40 @@ const RemotePlayerMesh = ({
   player, charIdx,
 }: { player: RemotePlayerState; charIdx: number }) => {
 
-  const groupRef = useRef<THREE.Group>(null);
-  const animRef  = useRef<THREE.Group>(null);
+  const groupRef    = useRef<THREE.Group>(null);
+  const animRef     = useRef<THREE.Group>(null);
+  const bonesRef    = useRef<BoneSet | null>(null);
+  const restRef     = useRef<RestPoses>(new Map());
+  const hasClipsRef = useRef(false);
 
-  const footWorldY = (cy: number) => cy - FOOT_OFFSET;
+  const footWorldY  = (cy: number) => cy - FOOT_OFFSET;
 
-  const targetPos  = useRef(new THREE.Vector3(
+  const targetPos   = useRef(new THREE.Vector3(
     player.position[0], footWorldY(player.position[1]), player.position[2],
   ));
-  const targetRotY = useRef(player.rotation[1]);
+  const targetRotY  = useRef(player.rotation[1]);
 
   const { scene, animations } = useGLTF(CHARACTER_MODELS[charIdx]) as {
     scene: THREE.Group;
     animations: THREE.AnimationClip[];
   };
 
-  // ── Clone: SkeletonUtils shares material refs → original colours preserved ─
+  // ── Clone: shares material refs → original colours preserved ─────────────
   const clonedScene = useMemo(() => {
     const clone = SkeletonUtils.clone(scene) as THREE.Group;
 
-    // Scale to 1.75 m
+    // 1. Scale to human height (1.75 m)
     clone.updateMatrixWorld(true);
     const box1 = new THREE.Box3().setFromObject(clone);
     const h    = box1.getSize(new THREE.Vector3()).y;
     if (h > 0) clone.scale.setScalar(TARGET_HEIGHT / h);
 
-    // Lift so feet are at local Y = 0 (applied to whole clone → no split body)
+    // 2. Shift so feet are at local Y = 0 (applied to whole clone → no split body)
     clone.updateMatrixWorld(true);
     const box2 = new THREE.Box3().setFromObject(clone);
     clone.position.y = -box2.min.y;
 
-    // Tag for raycasting only — NEVER clone or replace materials here
+    // 3. Tag meshes for raycast — do NOT clone/replace materials (keeps colours)
     clone.traverse(child => {
       const mesh = child as THREE.Mesh;
       if (!mesh.isMesh) return;
@@ -92,12 +100,20 @@ const RemotePlayerMesh = ({
     return clone;
   }, [scene, player.id]);
 
-  // ── Embedded GLB animation clips (play if available) ─────────────────────
+  // ── After clone ready: capture rest poses + find bones ───────────────────
+  useEffect(() => {
+    // Store rest quaternion for every bone BEFORE any animation starts
+    restRef.current = captureRestPoses(clonedScene);
+    bonesRef.current = findBones(clonedScene);
+  }, [clonedScene]);
+
+  // ── Try GLB embedded animation clips ─────────────────────────────────────
   const { actions } = useAnimations(animations, animRef);
 
   useEffect(() => {
     const clipNames = Object.keys(actions);
-    if (!clipNames.length) return; // no clips → rest pose, group bob handles feel
+    hasClipsRef.current = clipNames.length > 0;
+    if (!hasClipsRef.current) return; // will use procedural below
 
     const find = (...kws: string[]) =>
       kws.reduce<string | undefined>(
@@ -121,28 +137,27 @@ const RemotePlayerMesh = ({
     return () => { next.fadeOut(0.2); };
   }, [player.action, actions]);
 
-  // ── Per-frame: group-level bob + interpolation ────────────────────────────
+  // ── Per-frame update ──────────────────────────────────────────────────────
   useFrame(({ clock }, delta) => {
     if (!groupRef.current) return;
+    const elapsed = clock.getElapsedTime();
 
-    // Safe body-bob at GROUP level (no bones touched — avoids twisted characters)
-    const bob = getMovementBob(player.action, clock.getElapsedTime());
+    // Procedural animation when no GLB clips (rest-pose-additive, never breaks rig)
+    if (!hasClipsRef.current && bonesRef.current && restRef.current.size > 0) {
+      applyProceduralAnimation(
+        bonesRef.current, player.action, elapsed, delta, restRef.current,
+      );
+    }
 
-    // Smooth XZ interpolation
+    // Group-level Y-bob for movement feel
+    const bob = getMovementBob(player.action, elapsed);
+
+    // Smooth entity interpolation (XZ fast, Y includes bob)
     const al = Math.min(delta * 18, 1);
-    groupRef.current.position.x = THREE.MathUtils.lerp(
-      groupRef.current.position.x, targetPos.current.x, al,
-    );
-    groupRef.current.position.z = THREE.MathUtils.lerp(
-      groupRef.current.position.z, targetPos.current.z, al,
-    );
-    // Y includes the movement bob
-    groupRef.current.position.y = THREE.MathUtils.lerp(
-      groupRef.current.position.y, targetPos.current.y + bob, al,
-    );
-    groupRef.current.rotation.y = THREE.MathUtils.lerp(
-      groupRef.current.rotation.y, targetRotY.current, al,
-    );
+    groupRef.current.position.x = THREE.MathUtils.lerp(groupRef.current.position.x, targetPos.current.x, al);
+    groupRef.current.position.z = THREE.MathUtils.lerp(groupRef.current.position.z, targetPos.current.z, al);
+    groupRef.current.position.y = THREE.MathUtils.lerp(groupRef.current.position.y, targetPos.current.y + bob, al);
+    groupRef.current.rotation.y = THREE.MathUtils.lerp(groupRef.current.rotation.y, targetRotY.current, al);
   });
 
   useEffect(() => {
@@ -162,6 +177,7 @@ const RemotePlayerMesh = ({
       ref={groupRef}
       position={[player.position[0], footWorldY(player.position[1]), player.position[2]]}
     >
+      {/* animRef wraps clonedScene — mixer finds all bones here */}
       <group ref={animRef}>
         <primitive object={clonedScene} />
       </group>
@@ -193,6 +209,7 @@ const RemotePlayerMesh = ({
   );
 };
 
+// ── Container ─────────────────────────────────────────────────────────────────
 export const RemotePlayers = () => {
   const remote = useNetworkStore(s => s.remotePlayers);
   return (
