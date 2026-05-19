@@ -168,9 +168,16 @@ export default function App() {
             shadows
             camera={{ fov: 90 }}
           >
-            <Suspense fallback={null}>
-              <EnvironmentSetup />
-              
+            {/* Lights + sky always present — scene is NEVER black */}
+            <EnvironmentSetup />
+
+            <Suspense fallback={
+              // 3-D "Loading…" text shown while assets stream in
+              <mesh position={[0, 2, -3]}>
+                <boxGeometry args={[0.1, 0.1, 0.1]} />
+                <meshBasicMaterial color="#e63946" />
+              </mesh>
+            }>
               <Physics gravity={[0, -30, 0]}>
                 <MapLoader mapUrl="/models/maps/low_poly_industrial_zone.glb" />
                 <Player />
