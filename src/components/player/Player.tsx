@@ -5,6 +5,7 @@ import { useInputStore } from '../../store/useInputStore';
 import { CapsuleCollider, RigidBody, useRapier, type RapierRigidBody } from '@react-three/rapier';
 import * as THREE from 'three';
 import { useNetworkStore } from '../../store/useNetworkStore';
+import { useGameStore } from '../../store/useGameStore';
 
 const SPEED = 5;
 const SPRINT_MULTIPLIER = 1.8;
@@ -86,10 +87,14 @@ export const Player = () => {
     if (networkTimer.current >= NETWORK_TICK) {
       networkTimer.current = 0;
       const isMoving = forward || backward || left || right;
+      const hSpeed = Math.sqrt(direction.current.x ** 2 + direction.current.z ** 2);
+      const playerName = useGameStore.getState().playerName ?? 'Player';
       sendUpdate({
+        name: playerName,
         position: [translation.x, translation.y, translation.z],
         rotation: [euler.current.x, euler.current.y, euler.current.z],
         action: sprint && isMoving ? 'running' : isMoving ? 'walking' : 'idle',
+        velocity: hSpeed,
       });
     }
   });

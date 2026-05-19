@@ -13,8 +13,9 @@ import { PointerLockControls } from '@react-three/drei';
 import { useNetworkStore } from './store/useNetworkStore';
 import { useGameStore } from './store/useGameStore';
 
+
 // ─── Lobby Screen ─────────────────────────────────────────────────────────────
-const LobbyScreen = ({ onJoin }: { onJoin: (roomId: string) => void }) => {
+const LobbyScreen = ({ onJoin }: { onJoin: (roomId: string, name: string) => void }) => {
   const [roomInput, setRoomInput] = useState('');
   const [name, setName] = useState('');
   const [isConnecting, setIsConnecting] = useState(false);
@@ -23,13 +24,10 @@ const LobbyScreen = ({ onJoin }: { onJoin: (roomId: string) => void }) => {
   const handleJoin = () => {
     const id = roomInput.trim().toUpperCase() || 'GLOBAL';
     setIsConnecting(true);
-    onJoin(id);
+    onJoin(id, name);
   };
 
-  const handleQuickPlay = () => {
-    setIsConnecting(true);
-    onJoin('GLOBAL');
-  };
+
 
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center overflow-hidden bg-black">
@@ -78,29 +76,29 @@ const LobbyScreen = ({ onJoin }: { onJoin: (roomId: string) => void }) => {
               onKeyDown={e => e.key === 'Enter' && handleJoin()}
               className="flex-1 bg-white/5 border border-white/10 text-white px-4 py-3 rounded font-mono text-sm placeholder-white/20 focus:outline-none focus:border-[#e63946]/50 transition-colors"
             />
-            <button
-              onClick={handleJoin}
-              disabled={isConnecting}
-              className="px-6 py-3 bg-white/10 border border-white/20 text-white font-bold text-sm uppercase tracking-widest rounded hover:bg-white/20 transition-all disabled:opacity-50"
-            >
-              {isConnecting ? '...' : 'Join'}
-            </button>
-          </div>
-
-          <div className="flex items-center gap-3 my-1">
-            <div className="flex-1 h-px bg-white/10" />
-            <span className="text-white/20 text-xs font-mono">OR</span>
-            <div className="flex-1 h-px bg-white/10" />
-          </div>
-
           <button
-            onClick={handleQuickPlay}
+            onClick={() => onJoin(roomInput.trim().toUpperCase() || 'GLOBAL', name)}
             disabled={isConnecting}
-            className="w-full py-4 bg-[#e63946] text-white font-black text-lg uppercase tracking-widest rounded hover:bg-[#c1121f] active:scale-95 transition-all disabled:opacity-50"
-            style={{ boxShadow: '0 0 30px rgba(230,57,70,0.4)' }}
+            className="px-6 py-3 bg-white/10 border border-white/20 text-white font-bold text-sm uppercase tracking-widest rounded hover:bg-white/20 transition-all disabled:opacity-50"
           >
-            {isConnecting ? 'Connecting...' : '⚡ Quick Play'}
+            {isConnecting ? '...' : 'Join'}
           </button>
+        </div>
+
+        <div className="flex items-center gap-3 my-1">
+          <div className="flex-1 h-px bg-white/10" />
+          <span className="text-white/20 text-xs font-mono">OR</span>
+          <div className="flex-1 h-px bg-white/10" />
+        </div>
+
+        <button
+          onClick={() => onJoin('GLOBAL', name)}
+          disabled={isConnecting}
+          className="w-full py-4 bg-[#e63946] text-white font-black text-lg uppercase tracking-widest rounded hover:bg-[#c1121f] active:scale-95 transition-all disabled:opacity-50"
+          style={{ boxShadow: '0 0 30px rgba(230,57,70,0.4)' }}
+        >
+          {isConnecting ? 'Connecting...' : '⚡ Quick Play'}
+        </button>
         </div>
 
         <p className="text-white/20 text-xs font-mono">
@@ -134,10 +132,10 @@ export default function App() {
   const setMatchState = useGameStore(s => s.setMatchState);
   const [pointerLocked, setPointerLocked] = useState(false);
 
-  const handleJoin = (roomId: string) => {
+  const handleJoin = (roomId: string, playerName: string) => {
+    useGameStore.getState().setPlayerName(playerName || 'Player');
     connect(roomId);
     setPhase('game');
-    // Small delay to let the scene load before asking for pointer lock
     setTimeout(() => {
       setMatchState('playing');
     }, 800);

@@ -4,13 +4,16 @@ import { useGameStore } from './useGameStore';
 
 export interface RemotePlayerState {
   id: string;
+  name: string;
   position: [number, number, number];
   rotation: [number, number, number];
   health: number;
   isDead: boolean;
   weaponIdx: number;
   action: string;
+  velocity: number; // horizontal speed magnitude for animation blending
 }
+
 
 interface NetworkState {
   socket: Socket | null;

@@ -9,6 +9,7 @@ interface GameState {
   score: number;
   kills: number;
   matchState: 'waiting' | 'playing' | 'ended';
+  playerName: string;
   setHealth: (health: number) => void;
   takeDamage: (amount: number) => void;
   setAmmo: (ammo: number) => void;
@@ -16,6 +17,7 @@ interface GameState {
   setMatchState: (state: 'waiting' | 'playing' | 'ended') => void;
   addKill: () => void;
   respawn: () => void;
+  setPlayerName: (name: string) => void;
 }
 
 export const useGameStore = create<GameState>((set) => ({
@@ -27,7 +29,8 @@ export const useGameStore = create<GameState>((set) => ({
   score: 0,
   kills: 0,
   matchState: 'waiting',
-  
+  playerName: 'Player',
+
   setHealth: (health) => set({ health, isDead: health <= 0 }),
   takeDamage: (amount) => set((state) => {
     const newHealth = Math.max(0, state.health - amount);
@@ -43,4 +46,5 @@ export const useGameStore = create<GameState>((set) => ({
   setMatchState: (matchState) => set({ matchState }),
   addKill: () => set((state) => ({ kills: state.kills + 1, score: state.score + 100 })),
   respawn: () => set({ health: 100, isDead: false, ammo: 30, magazines: 3 }),
+  setPlayerName: (playerName) => set({ playerName }),
 }));
