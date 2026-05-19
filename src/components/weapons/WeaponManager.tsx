@@ -5,10 +5,9 @@ import { WeaponModel } from './WeaponModel.tsx';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useNetworkStore } from '../../store/useNetworkStore';
 import * as THREE from 'three';
-
 import type { WeaponData } from './types';
 
-const WEAPONS: WeaponData[] = [
+export const WEAPONS: WeaponData[] = [
   {
     id: 'ak47',
     name: 'AK-47',
@@ -39,25 +38,48 @@ const WEAPONS: WeaponData[] = [
   },
 ];
 
-// Raycasting helpers (allocated once, reused every frame)
+// Raycasting helpers — allocated once, reused every frame
 const _raycaster = new THREE.Raycaster();
 const _shootDir  = new THREE.Vector3();
 
 export const WeaponManager = () => {
+  const [weaponIdx, setWeaponIdx]       = useState(0);
   const [isReloading, setIsReloading]   = useState(false);
   const [lastShotTime, setLastShotTime] = useState(0);
   const reloadingRef = useRef(false);
 
-  const { shoot, reload: reloadInput } = useInputStore();
+  const { shoot, reload: reloadInput, weapon1, weapon2 } = useInputStore();
   const { ammo, setAmmo, reload, magazines } = useGameStore();
-  const sendHit    = useNetworkStore((s) => s.sendHit);
+  const sendHit       = useNetworkStore((s) => s.sendHit);
+  const sendUpdate    = useNetworkStore((s) => s.sendUpdate);
   const remotePlayers = useNetworkStore((s) => s.remotePlayers);
 
   const { camera, scene } = useThree();
 
-  const currentWeapon = WEAPONS[0];
+  const currentWeapon = WEAPONS[weaponIdx];
 
-  // Initialize ammo on mount
+  // ── Weapon switching via keys 1 / 2 ────────────────────────────────────
+  useEffect(() => {
+    if (weapon1 && weaponIdx !== 0) {
+      setWeaponIdx(0);
+      reloadingRef.current = false;
+      setIsReloading(false);
+      useGameStore.setState({ ammo: WEAPONS[0].magazineSize, maxAmmo: WEAPONS[0].magazineSize });
+      sendUpdate({ weaponIdx: 0 });
+    }
+  }, [weapon1, weaponIdx, sendUpdate]);
+
+  useEffect(() => {
+    if (weapon2 && weaponIdx !== 1) {
+      setWeaponIdx(1);
+      reloadingRef.current = false;
+      setIsReloading(false);
+      useGameStore.setState({ ammo: WEAPONS[1].magazineSize, maxAmmo: WEAPONS[1].magazineSize });
+      sendUpdate({ weaponIdx: 1 });
+    }
+  }, [weapon2, weaponIdx, sendUpdate]);
+
+  // ── Ammo init on weapon change ──────────────────────────────────────────
   useEffect(() => {
     useGameStore.setState({
       ammo: currentWeapon.magazineSize,
@@ -65,7 +87,7 @@ export const WeaponManager = () => {
     });
   }, [currentWeapon]);
 
-  // Reload handler — uses a ref guard to avoid effect-chaining
+  // ── Reload ──────────────────────────────────────────────────────────────
   const startReload = useCallback(() => {
     if (reloadingRef.current) return;
     reloadingRef.current = true;
@@ -83,43 +105,34 @@ export const WeaponManager = () => {
     }
   }, [reloadInput, ammo, currentWeapon.magazineSize, magazines, startReload]);
 
-  // ── Fire & Raycast Hit-detection ─────────────────────────────────────────
+  // ── Fire + raycast hit detection ────────────────────────────────────────
   const fireWeapon = useCallback(() => {
-    // Cast a ray from camera center into the scene
     camera.getWorldDirection(_shootDir);
     _raycaster.set(camera.position, _shootDir);
     _raycaster.far = 200;
 
-    // Collect all meshes belonging to remote players in the scene
-    const remoteIds = Array.from(remotePlayers.keys());
-    if (remoteIds.length === 0) return;
+    if (remotePlayers.size === 0) return;
 
-    // We need to find meshes in the scene tagged to remote players.
-    // Remote player meshes are NOT tagged with an ID, so we raycast the full scene
-    // and check distance — this is good enough for a first pass.
     const intersects = _raycaster.intersectObjects(scene.children, true);
 
     for (const hit of intersects) {
-      // Walk up the object hierarchy to find the group root
       let obj: THREE.Object3D | null = hit.object;
       while (obj && !obj.userData['playerId']) {
         obj = obj.parent;
       }
       if (obj && obj.userData['playerId']) {
-        const targetId = obj.userData['playerId'] as string;
-        sendHit(targetId, currentWeapon.damage);
-        break; // only hit the first target
+        sendHit(obj.userData['playerId'] as string, currentWeapon.damage);
+        break;
       }
     }
   }, [camera, scene, remotePlayers, sendHit, currentWeapon.damage]);
 
   useFrame((state) => {
     if (isReloading) return;
-
     if (shoot && ammo > 0) {
-      const time = state.clock.getElapsedTime();
-      if (time - lastShotTime > currentWeapon.fireRate) {
-        setLastShotTime(time);
+      const t = state.clock.getElapsedTime();
+      if (t - lastShotTime > currentWeapon.fireRate) {
+        setLastShotTime(t);
         setAmmo(ammo - 1);
         fireWeapon();
       }
@@ -128,7 +141,7 @@ export const WeaponManager = () => {
 
   return (
     <group>
-      <WeaponModel weapon={currentWeapon} isReloading={isReloading} />
+      <WeaponModel weapon={currentWeapon} isReloading={isReloading} isShooting={shoot && ammo > 0} />
     </group>
   );
 };

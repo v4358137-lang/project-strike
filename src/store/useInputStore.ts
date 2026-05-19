@@ -12,6 +12,8 @@ interface InputState {
   shoot: boolean;
   ads: boolean;
   reload: boolean;
+  weapon1: boolean;
+  weapon2: boolean;
 }
 
 export const useInputStore = create<InputState>(() => ({
@@ -25,6 +27,8 @@ export const useInputStore = create<InputState>(() => ({
   shoot: false,
   ads: false,
   reload: false,
+  weapon1: false,
+  weapon2: false,
 }));
 
 const actionByKey: Record<string, keyof InputState> = {
@@ -36,22 +40,20 @@ const actionByKey: Record<string, keyof InputState> = {
   ShiftLeft: 'sprint',
   ControlLeft: 'crouch',
   KeyR: 'reload',
+  Digit1: 'weapon1',
+  Digit2: 'weapon2',
 };
 
 export const KeyboardManager = () => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const action = actionByKey[e.code];
-      if (action) {
-        useInputStore.setState({ [action]: true });
-      }
+      if (action) useInputStore.setState({ [action]: true });
     };
-    
+
     const handleKeyUp = (e: KeyboardEvent) => {
       const action = actionByKey[e.code];
-      if (action) {
-        useInputStore.setState({ [action]: false });
-      }
+      if (action) useInputStore.setState({ [action]: false });
     };
 
     const handleMouseDown = (e: MouseEvent) => {
@@ -63,12 +65,12 @@ export const KeyboardManager = () => {
       if (e.button === 0) useInputStore.setState({ shoot: false });
       if (e.button === 2) useInputStore.setState({ ads: false });
     };
-    
+
     document.addEventListener('keydown', handleKeyDown);
     document.addEventListener('keyup', handleKeyUp);
     document.addEventListener('mousedown', handleMouseDown);
     document.addEventListener('mouseup', handleMouseUp);
-    
+
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('keyup', handleKeyUp);
@@ -76,6 +78,6 @@ export const KeyboardManager = () => {
       document.removeEventListener('mouseup', handleMouseUp);
     };
   }, []);
-  
+
   return null;
 };

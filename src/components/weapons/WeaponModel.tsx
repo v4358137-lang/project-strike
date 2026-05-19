@@ -8,6 +8,7 @@ import { useInputStore } from '../../store/useInputStore';
 interface Props {
   weapon: WeaponData;
   isReloading: boolean;
+  isShooting?: boolean;
 }
 
 export const WeaponModel = ({ weapon, isReloading }: Props) => {

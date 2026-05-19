@@ -42,7 +42,7 @@ export const Player = () => {
   useFrame((state, delta) => {
     if (!rigidBody.current) return;
     
-    const { forward, backward, left, right, jump, sprint } = useInputStore.getState();
+    const { forward, backward, left, right, jump, sprint, crouch, shoot } = useInputStore.getState();
     
     frontVector.current.set(0, 0, Number(backward) - Number(forward));
     sideVector.current.set(Number(left) - Number(right), 0, 0);
@@ -89,11 +89,18 @@ export const Player = () => {
       const isMoving = forward || backward || left || right;
       const hSpeed = Math.sqrt(direction.current.x ** 2 + direction.current.z ** 2);
       const playerName = useGameStore.getState().playerName ?? 'Player';
+      const isShooting = shoot;
+      const action = crouch ? 'crouching'
+        : !isGrounded && velocity.current.y > 0.5 ? 'jumping'
+        : sprint && isMoving ? 'running'
+        : isMoving ? 'walking'
+        : isShooting ? 'shooting'
+        : 'idle';
       sendUpdate({
         name: playerName,
         position: [translation.x, translation.y, translation.z],
         rotation: [euler.current.x, euler.current.y, euler.current.z],
-        action: sprint && isMoving ? 'running' : isMoving ? 'walking' : 'idle',
+        action,
         velocity: hSpeed,
       });
     }
