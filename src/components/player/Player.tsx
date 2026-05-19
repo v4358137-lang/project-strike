@@ -179,12 +179,15 @@ export const Player = () => {
 
     // ── Spawning terrain height correction (Step 9) ──
     if (!spawned.current) {
+      rb.setGravityScale(0, true);
+      rb.setLinvel({ x: 0, y: 0, z: 0 }, true);
       const pos = rb.translation();
       const spawnRay = new rapier.Ray({ x: pos.x, y: 60, z: pos.z }, { x: 0, y: -1, z: 0 });
-      const hit = world.castRay(spawnRay, 120, true);
+      const hit = world.castRay(spawnRay, 120, true, undefined, undefined, undefined, rb);
       if (hit !== null) {
         const hitPoint = spawnRay.pointAt((hit as any).toi);
         rb.setTranslation({ x: pos.x, y: hitPoint.y + 1.25, z: pos.z }, true);
+        rb.setGravityScale(1, true);
         spawned.current = true;
       }
     }
@@ -209,7 +212,7 @@ export const Player = () => {
     // Ground raycast check
     const pos = rb.translation();
     const ray = new rapier.Ray({ x: pos.x, y: pos.y - 1.05, z: pos.z }, { x: 0, y: -1, z: 0 });
-    const grounded = world.castRay(ray, 0.28, true) !== null;
+    const grounded = world.castRay(ray, 0.28, true, undefined, undefined, undefined, rb) !== null;
     if (inp.jump && grounded) vel.current.y = JUMP_FORCE;
     rb.setLinvel(vel.current, true);
 
