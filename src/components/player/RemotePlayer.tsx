@@ -1,13 +1,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useRef, useEffect, useMemo, useCallback } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { useGLTF, useAnimations, Billboard, Text } from '@react-three/drei';
+import { useGLTF, Html } from '@react-three/drei';
 import { SkeletonUtils } from 'three-stdlib';
 import * as THREE from 'three';
 import { useNetworkStore, type RemotePlayerState } from '../../store/useNetworkStore';
 import { WEAPONS } from '../weapons/WeaponManager';
 import {
-  findBones, captureRestPoses, applyProceduralAnimation, getMovementBob,
+  findBones, captureRestPoses, calibrateSkeleton, applyProceduralAnimation, getMovementBob,
   type BoneSet, type RestPoses,
 } from './ProceduralAnimator';
 import { MuzzleFlash } from '../effects/MuzzleFlash';
@@ -27,28 +27,7 @@ function stableIdx(id: string, n: number) {
   return h % n;
 }
 
-/* ─── Right-hand bone search ─────────────────────────────────────────────────── */
-const RH_KEYWORDS = [
-  'righthand','handr','r_hand','wristr','rightwrist',
-  'rhand','hand_r','handright','palmr','mixamorigrighthand',
-];
-
-function findRightHandBone(model: THREE.Object3D): THREE.Object3D | null {
-  let found: THREE.Object3D | null = null;
-  model.traverse(obj => {
-    if (found) return;
-    const n = obj.name.toLowerCase().replace(/[\s\-_.]/g, '');
-    if (RH_KEYWORDS.some(k => n.includes(k))) found = obj;
-  });
-  return found;
-}
-
-/* ─── Pre-allocated THREE objects (never allocate inside useFrame) ───────────── */
-const _wp = new THREE.Vector3();
-const _wq = new THREE.Quaternion();
-const _pi = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
-
-/* ─── Weapon attached to hand bone (or shoulder fallback) ────────────────────── */
+/* ─── Weapon attached to remote player hand bone ────────────────────────────── */
 const HandWeapon = ({
   weaponIdx,
   handBoneRef,
@@ -68,11 +47,14 @@ const HandWeapon = ({
     c.updateMatrixWorld(true);
     const box    = new THREE.Box3().setFromObject(c);
     const maxDim = Math.max(...box.getSize(new THREE.Vector3()).toArray());
-    if (maxDim > 0) c.scale.setScalar(0.58 / maxDim);
+    if (maxDim > 0) c.scale.setScalar(0.60 / maxDim);
     return c;
   }, [scene]);
 
   const wRef = useRef<THREE.Group>(null);
+  const _wp = new THREE.Vector3();
+  const _wq = new THREE.Quaternion();
+  const _pi = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
 
   useFrame(() => {
     if (!wRef.current) return;
@@ -80,18 +62,15 @@ const HandWeapon = ({
     const body = groupRef.current;
 
     if (hand) {
-      // Track the actual hand bone in world space
       hand.getWorldPosition(_wp);
       hand.getWorldQuaternion(_wq);
       wRef.current.position.copy(_wp);
       wRef.current.quaternion.copy(_wq);
-      wRef.current.quaternion.multiply(_pi); // flip barrel to face forward
+      wRef.current.quaternion.multiply(_pi); // face gun barrel forward
     } else if (body) {
-      // Fallback: fixed position at shoulder height in group-local space
       body.getWorldPosition(_wp);
-      _wp.y += 1.22;
-      _wp.x += 0.14;
-      // Forward offset using body's facing direction
+      _wp.y += 1.25;
+      _wp.x += 0.15;
       body.getWorldQuaternion(_wq);
       const fwd = new THREE.Vector3(0, 0, -0.06).applyQuaternion(_wq);
       _wp.add(fwd);
@@ -108,7 +87,7 @@ const HandWeapon = ({
   );
 };
 
-/* ─── Single remote player ──────────────────────────────────────────────────── */
+/* ─── Single remote player mesh ────────────────────────────────────────────── */
 const RemotePlayerMesh = ({
   player, charIdx,
 }: { player: RemotePlayerState; charIdx: number }) => {
@@ -118,19 +97,14 @@ const RemotePlayerMesh = ({
   const bonesRef    = useRef<BoneSet | null>(null);
   const restRef     = useRef<RestPoses>(new Map());
   const handBoneRef = useRef<THREE.Object3D | null>(null);
-  const hasClipsRef = useRef(false);
 
   const footY = useCallback((cy: number) => cy - FOOT_OFFSET, []);
 
   const tPos  = useRef(new THREE.Vector3(player.position[0], footY(player.position[1]), player.position[2]));
   const tRotY = useRef(player.rotation[1]);
 
-  const { scene, animations } = useGLTF(CHARACTER_MODELS[charIdx]) as {
-    scene: THREE.Group;
-    animations: THREE.AnimationClip[];
-  };
+  const { scene } = useGLTF(CHARACTER_MODELS[charIdx]) as { scene: THREE.Group };
 
-  /* ── Clone: shares original material refs → textures/colours preserved ────── */
   const clonedScene = useMemo(() => {
     const clone = SkeletonUtils.clone(scene) as THREE.Group;
 
@@ -141,7 +115,7 @@ const RemotePlayerMesh = ({
 
     clone.updateMatrixWorld(true);
     const b2 = new THREE.Box3().setFromObject(clone);
-    clone.position.y = -b2.min.y; // all meshes lifted together → no split body
+    clone.position.y = -b2.min.y;
 
     clone.traverse(ch => {
       const m = ch as THREE.Mesh;
@@ -154,51 +128,35 @@ const RemotePlayerMesh = ({
     return clone;
   }, [scene, player.id]);
 
-  /* ── Setup bones + rest poses after clone is ready ───────────────────────── */
+  /* ── Setup bones, poses and T-pose calibration once on mount ─────────────── */
   useEffect(() => {
     restRef.current     = captureRestPoses(clonedScene);
     bonesRef.current    = findBones(clonedScene);
-    handBoneRef.current = findRightHandBone(clonedScene);
+    if (bonesRef.current) {
+      calibrateSkeleton(bonesRef.current, restRef.current);
+    }
+    handBoneRef.current = bonesRef.current ? bonesRef.current.rightHand : null;
   }, [clonedScene]);
 
-  /* ── GLB animation clips (play if the model has them) ────────────────────── */
-  const { actions } = useAnimations(animations, animRef);
-
-  useEffect(() => {
-    const names = Object.keys(actions);
-    hasClipsRef.current = names.length > 0;
-    if (!hasClipsRef.current) return;
-
-    const find = (...kws: string[]) =>
-      kws.reduce<string | undefined>(
-        (f, kw) => f ?? names.find(n => n.toLowerCase().includes(kw)),
-        undefined,
-      ) ?? names[0];
-
-    const clip =
-      player.action === 'running'   ? find('run','sprint','jog')   :
-      player.action === 'walking'   ? find('walk','move')           :
-      player.action === 'shooting'  ? find('shoot','fire','attack') :
-      player.action === 'crouching' ? find('crouch','duck')         :
-      player.action === 'jumping'   ? find('jump','leap')           :
-                                      find('idle','stand','breath');
-
-    const next = actions[clip];
-    if (!next) return;
-    Object.values(actions).forEach(a => a?.fadeOut(0.25));
-    next.reset().fadeIn(0.25).play();
-    next.setLoop(THREE.LoopRepeat, Infinity);
-    return () => { next.fadeOut(0.2); };
-  }, [player.action, actions]);
-
-  /* ── Per-frame: animation + interpolation ────────────────────────────────── */
+  /* ── Interpolate position + run identical procedural blend tree ──────────── */
   useFrame(({ clock }, delta) => {
     if (!groupRef.current) return;
     const elapsed = clock.getElapsedTime();
 
-    if (!hasClipsRef.current && bonesRef.current && restRef.current.size > 0) {
+    if (bonesRef.current && restRef.current.size > 0) {
       applyProceduralAnimation(
-        bonesRef.current, player.action, elapsed, delta, restRef.current,
+        bonesRef.current,
+        {
+          action: player.action,
+          elapsed,
+          delta,
+          aimPitch: player.aimPitch ?? 0,
+          shooting: !!player.shooting,
+          reloadProgress: player.reloadProgress ?? 0,
+          velocity: player.velocity ?? 0,
+          isDead: !!player.isDead,
+        },
+        restRef.current
       );
     }
 
@@ -223,7 +181,6 @@ const RemotePlayerMesh = ({
 
   return (
     <>
-      {/* ── Character group ────────────────────────────────────────────────── */}
       <group
         ref={groupRef}
         position={[player.position[0], footY(player.position[1]), player.position[2]]}
@@ -232,34 +189,40 @@ const RemotePlayerMesh = ({
           <primitive object={clonedScene} />
         </group>
 
-        <Billboard follow position={[0, TARGET_HEIGHT + 0.42, 0]}>
-          <Text fontSize={0.15} color="#fff" anchorX="center" anchorY="bottom"
-            outlineWidth={0.012} outlineColor="#000" position={[0, 0.12, 0]}>
-            {player.name?.trim() || player.id.slice(0, 6).toUpperCase()}
-          </Text>
-          <mesh>
-            <planeGeometry args={[0.65, 0.065]} />
-            <meshBasicMaterial color="#111" transparent opacity={0.82} />
-          </mesh>
-          <mesh position={[-(0.325 - 0.65 * hp / 2), 0, 0.001]}>
-            <planeGeometry args={[0.65 * hp, 0.065]} />
-            <meshBasicMaterial color={hCol} />
-          </mesh>
-        </Billboard>
+        <Html position={[0, TARGET_HEIGHT + 0.35, 0]} center distanceFactor={8}>
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center',
+            fontFamily: "'Rajdhani', sans-serif", fontSize: '12px', color: '#fff',
+            textShadow: '0 0 4px #000, 1px 1px 2px #000', pointerEvents: 'none', userSelect: 'none',
+            whiteSpace: 'nowrap',
+          }}>
+            <div style={{ fontWeight: 'bold', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: '3px' }}>
+              {player.name?.trim() || player.id.slice(0, 6).toUpperCase()}
+            </div>
+            <div style={{
+              width: '60px', height: '4px', backgroundColor: 'rgba(0, 0, 0, 0.6)',
+              borderRadius: '2px', overflow: 'hidden', border: '1px solid rgba(0,0,0,0.8)',
+            }}>
+              <div style={{
+                width: `${hp * 100}%`, height: '100%',
+                backgroundColor: hCol, transition: 'width 0.1s ease',
+              }} />
+            </div>
+          </div>
+        </Html>
       </group>
 
-      {/* ── Weapon (rendered at scene root, tracked to hand bone each frame) ── */}
       <HandWeapon
         weaponIdx={player.weaponIdx ?? 0}
         handBoneRef={handBoneRef}
         groupRef={groupRef}
-        shooting={player.action === 'shooting'}
+        shooting={!!player.shooting}
       />
     </>
   );
 };
 
-/* ─── Container ───────────────────────────────────────────────────────────────── */
+/* ─── Remote players list container ─────────────────────────────────────────── */
 export const RemotePlayers = () => {
   const remote = useNetworkStore(s => s.remotePlayers);
   return (

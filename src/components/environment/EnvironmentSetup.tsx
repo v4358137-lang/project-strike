@@ -1,4 +1,4 @@
-import { Environment, Sky } from '@react-three/drei';
+import { Sky } from '@react-three/drei';
 
 export const EnvironmentSetup = () => {
   return (
@@ -16,14 +16,8 @@ export const EnvironmentSetup = () => {
         shadow-camera-bottom={-50}
       />
       
-      {/* 
-        HDRI Environment for realistic reflections. 
-        Will use a default preset but can be customized later.
-      */}
-      <Environment preset="city" />
-      
-      {/* Basic volumetric fog for cinematic feel */}
-      <fog attach="fog" args={['#87CEEB', 20, 100]} />
+      <hemisphereLight color="#ffffff" groundColor="#444444" intensity={0.4} />
+      <fog attach="fog" args={['#0a0f1a', 20, 150]} />
     </>
   );
 };

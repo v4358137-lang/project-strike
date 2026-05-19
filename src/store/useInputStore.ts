@@ -14,6 +14,7 @@ interface InputState {
   reload: boolean;
   weapon1: boolean;
   weapon2: boolean;
+  viewMode: 'fps' | 'tps';
 }
 
 export const useInputStore = create<InputState>(() => ({
@@ -29,9 +30,10 @@ export const useInputStore = create<InputState>(() => ({
   reload: false,
   weapon1: false,
   weapon2: false,
+  viewMode: 'tps', // Default to TPS as before, but can toggle to FPS
 }));
 
-const actionByKey: Record<string, keyof InputState> = {
+const actionByKey: Record<string, keyof Omit<InputState, 'viewMode'>> = {
   KeyW: 'forward',
   KeyS: 'backward',
   KeyA: 'left',
@@ -47,6 +49,12 @@ const actionByKey: Record<string, keyof InputState> = {
 export const KeyboardManager = () => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'KeyV') {
+        useInputStore.setState((s) => ({
+          viewMode: s.viewMode === 'fps' ? 'tps' : 'fps',
+        }));
+        return;
+      }
       const action = actionByKey[e.code];
       if (action) useInputStore.setState({ [action]: true });
     };

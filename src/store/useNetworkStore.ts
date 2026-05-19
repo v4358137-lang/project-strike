@@ -12,6 +12,9 @@ export interface RemotePlayerState {
   weaponIdx: number;
   action: string;
   velocity: number; // horizontal speed magnitude for animation blending
+  aimPitch?: number;
+  shooting?: boolean;
+  reloadProgress?: number;
 }
 
 
