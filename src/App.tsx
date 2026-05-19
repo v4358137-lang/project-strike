@@ -1,6 +1,6 @@
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { Physics } from '@react-three/rapier';
-import { Suspense, useState, useRef } from 'react';
+import { Suspense, useState, useRef, useCallback, useEffect } from 'react';
 import { Player } from './components/player/Player';
 import { RemotePlayers } from './components/player/RemotePlayer';
 import { WeaponManager } from './components/weapons/WeaponManager';
@@ -12,6 +12,95 @@ import { KeyboardManager } from './store/useInputStore';
 import { PointerLockControls } from '@react-three/drei';
 import { useNetworkStore } from './store/useNetworkStore';
 import { useGameStore } from './store/useGameStore';
+
+/* ─── Loading Screen ──────────────────────────────────────────────────────────── */
+const LoadingScreen = () => (
+  <div style={{
+    position: 'fixed', inset: 0, zIndex: 9999,
+    background: 'linear-gradient(135deg, #05050a 0%, #0a0f1a 60%, #0f0a14 100%)',
+    display: 'flex', flexDirection: 'column',
+    alignItems: 'center', justifyContent: 'center',
+    fontFamily: "'Rajdhani', 'Orbitron', 'Courier New', monospace",
+    color: '#fff',
+  }}>
+    {/* Grid overlay */}
+    <div style={{
+      position: 'absolute', inset: 0, opacity: 0.04,
+      backgroundImage: 'linear-gradient(rgba(255,255,255,0.6) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.6) 1px, transparent 1px)',
+      backgroundSize: '50px 50px',
+    }} />
+    {/* Red glow orb */}
+    <div style={{
+      position: 'absolute', top: '35%', left: '50%',
+      transform: 'translate(-50%, -50%)',
+      width: 600, height: 600, borderRadius: '50%', opacity: 0.12,
+      background: 'radial-gradient(circle, #e63946 0%, transparent 70%)',
+    }} />
+
+    <div style={{ position: 'relative', textAlign: 'center' }}>
+      {/* Title */}
+      <h1 style={{
+        fontSize: '5rem', fontWeight: 900, letterSpacing: '0.25em',
+        lineHeight: 1, margin: 0, textTransform: 'uppercase',
+        textShadow: '0 0 60px rgba(230,57,70,0.9), 0 0 120px rgba(230,57,70,0.4)',
+      }}>
+        PROJECT<br />
+        <span style={{ color: '#e63946' }}>STRIKE</span>
+      </h1>
+      <p style={{ color: 'rgba(255,255,255,0.35)', letterSpacing: '0.3em', fontSize: '0.8rem', marginTop: '0.5rem' }}>
+        TACTICAL MULTIPLAYER SHOOTER
+      </p>
+
+      {/* Animated progress bar */}
+      <div style={{ margin: '2.5rem auto 0', width: 340, height: 3, background: 'rgba(255,255,255,0.08)', borderRadius: 2, overflow: 'hidden' }}>
+        <div style={{
+          height: '100%', width: '45%', borderRadius: 2,
+          background: 'linear-gradient(90deg, transparent, #e63946, #ff6b6b, #e63946, transparent)',
+          animation: 'loadBar 1.6s ease-in-out infinite',
+        }} />
+      </div>
+
+      {/* Status */}
+      <p style={{ marginTop: '1.2rem', color: 'rgba(255,255,255,0.3)', fontSize: '0.72rem', letterSpacing: '0.25em' }}>
+        INITIALIZING PHYSICS ENGINE
+      </p>
+
+      {/* Tactical corner brackets */}
+      {['topLeft','topRight','bottomLeft','bottomRight'].map(c => (
+        <div key={c} style={{
+          position: 'absolute',
+          ...(c.includes('top') ? { top: -30 } : { bottom: -30 }),
+          ...(c.includes('Left') ? { left: -30 } : { right: -30 }),
+          width: 20, height: 20,
+          borderTop: c.includes('top') ? '2px solid #e63946' : 'none',
+          borderBottom: c.includes('bottom') ? '2px solid #e63946' : 'none',
+          borderLeft: c.includes('Left') ? '2px solid #e63946' : 'none',
+          borderRight: c.includes('Right') ? '2px solid #e63946' : 'none',
+        }} />
+      ))}
+    </div>
+
+    <style>{`
+      @keyframes loadBar {
+        0%   { transform: translateX(-200%); }
+        100% { transform: translateX(900%); }
+      }
+    `}</style>
+  </div>
+);
+
+/** Mounts inside Physics — signals map+physics are ready after first R3F frame */
+const MapLoadedSignal = ({ onLoaded }: { onLoaded: () => void }) => {
+  const fired = useRef(false);
+  useFrame(() => {
+    if (!fired.current) {
+      fired.current = true;
+      // Small delay so physics has fully settled
+      setTimeout(onLoaded, 600);
+    }
+  });
+  return null;
+};
 
 
 // ─── Lobby Screen ─────────────────────────────────────────────────────────────
@@ -127,25 +216,38 @@ const RoomHUD = () => {
 
 // ─── App ───────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [phase, setPhase] = useState<'lobby' | 'game'>('lobby');
+  const [phase, setPhase] = useState<'lobby' | 'loading' | 'game'>('lobby');
   const connect = useNetworkStore(s => s.connect);
   const setMatchState = useGameStore(s => s.setMatchState);
   const [pointerLocked, setPointerLocked] = useState(false);
+  const [mapLoaded, setMapLoaded] = useState(false);
+
+  const handleMapLoaded = useCallback(() => {
+    setMapLoaded(true);
+    setMatchState('playing');
+  }, [setMatchState]);
 
   const handleJoin = (roomId: string, playerName: string) => {
     useGameStore.getState().setPlayerName(playerName || 'Player');
     connect(roomId);
-    setPhase('game');
-    setTimeout(() => {
-      setMatchState('playing');
-    }, 800);
+    setPhase('loading');
+    // Canvas starts rendering in background; MapLoadedSignal will flip to 'game'
   };
+
+  // Transition to game phase once map is fully loaded
+  useEffect(() => {
+    if (mapLoaded && phase === 'loading') setPhase('game');
+  }, [mapLoaded, phase]);
 
   return (
     <div className="w-screen h-screen bg-black relative">
       {phase === 'lobby' && <LobbyScreen onJoin={handleJoin} />}
 
-      {phase === 'game' && (
+      {/* Loading screen overlay — visible while map streams in */}
+      {(phase === 'loading' || (phase === 'game' && !mapLoaded)) && <LoadingScreen />}
+
+      {/* Canvas always mounts once user has joined — preloads assets in background */}
+      {(phase === 'loading' || phase === 'game') && (
         <>
           <KeyboardManager />
           <HUD />
@@ -171,14 +273,10 @@ export default function App() {
             {/* Lights + sky always present — scene is NEVER black */}
             <EnvironmentSetup />
 
-            <Suspense fallback={
-              // 3-D "Loading…" text shown while assets stream in
-              <mesh position={[0, 2, -3]}>
-                <boxGeometry args={[0.1, 0.1, 0.1]} />
-                <meshBasicMaterial color="#e63946" />
-              </mesh>
-            }>
+            <Suspense fallback={null}>
               <Physics gravity={[0, -30, 0]}>
+                {/* Signal fires after first frame → Physics + map are ready */}
+                <MapLoadedSignal onLoaded={handleMapLoaded} />
                 <MapLoader mapUrl="/models/maps/low_poly_industrial_zone.glb" />
                 <Player />
                 <RemotePlayers />

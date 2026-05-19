@@ -1,26 +1,22 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useRef, useEffect, useMemo } from 'react';
+import { useRef, useEffect, useMemo, useCallback } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF, useAnimations, Billboard, Text } from '@react-three/drei';
 import { SkeletonUtils } from 'three-stdlib';
 import * as THREE from 'three';
 import { useNetworkStore, type RemotePlayerState } from '../../store/useNetworkStore';
 import { WEAPONS } from '../weapons/WeaponManager';
-import {
-  findBones, captureRestPoses, applyProceduralAnimation, getMovementBob,
-  type BoneSet, type RestPoses,
-} from './ProceduralAnimator';
+import { findBones, captureRestPoses, applyProceduralAnimation, getMovementBob, type BoneSet, type RestPoses } from './ProceduralAnimator';
+import { MuzzleFlash } from '../effects/MuzzleFlash';
 
+/* ─── Constants ─────────────────────────────────────────────────────────────── */
 const CHARACTER_MODELS = [
   '/models/characters/hero__character.glb',
   '/models/characters/cyberpunk_black_man_character.glb',
   '/models/characters/grapple_pilot.glb',
 ];
-
-// All characters scaled to this height via bounding-box normalisation
 const TARGET_HEIGHT = 1.75;
-// Capsule: halfHeight=0.5 + radius=0.5 → feet are 1.0 below capsule centre
-const FOOT_OFFSET   = 1.0;
+const FOOT_OFFSET   = 1.0; // capsule halfHeight(0.5) + radius(0.5)
 
 function stableIdx(id: string, n: number) {
   let h = 0;
@@ -28,66 +24,123 @@ function stableIdx(id: string, n: number) {
   return h % n;
 }
 
-// ── Weapon held at shoulder ────────────────────────────────────────────────────
-const HandWeapon = ({ weaponIdx }: { weaponIdx: number }) => {
+/* ─── Right-hand bone keyword list ──────────────────────────────────────────── */
+const RIGHT_HAND_KW = [
+  'righthand','handr','r_hand','wristr','rightwrist',
+  'rhand','hand_r','handright','palmr','mixamorigrighthand',
+];
+
+function findRightHandBone(model: THREE.Object3D): THREE.Object3D | null {
+  let found: THREE.Object3D | null = null;
+  model.traverse(obj => {
+    if (found) return;
+    const n = obj.name.toLowerCase().replace(/[\s\-_.]/g, '');
+    if (RIGHT_HAND_KW.some(k => n.includes(k))) found = obj;
+  });
+  return found;
+}
+
+/* ─── Weapon component: tracked to right-hand bone ──────────────────────────── */
+const _wp  = new THREE.Vector3();
+const _wq  = new THREE.Quaternion();
+const _wu  = new THREE.Vector3(1, 0, 0);  // up for slerp
+const _adj = new THREE.Quaternion();       // weapon-local adjustment
+
+interface WeaponProps {
+  weaponIdx: number;
+  handBone: THREE.Object3D | null;
+  fallbackGroup: THREE.Group | null;
+  shooting: boolean;
+}
+
+const WeaponAttachment = ({ weaponIdx, handBone, fallbackGroup, shooting }: WeaponProps) => {
   const w = WEAPONS[weaponIdx % WEAPONS.length];
   const { scene } = useGLTF(w.modelPath) as { scene: THREE.Group };
 
-  const clone = useMemo(() => {
+  const { clone: weaponClone, scale: weaponScale } = useMemo(() => {
     const c = SkeletonUtils.clone(scene) as THREE.Group;
     c.updateMatrixWorld(true);
     const box    = new THREE.Box3().setFromObject(c);
     const maxDim = Math.max(...box.getSize(new THREE.Vector3()).toArray());
-    if (maxDim > 0) c.scale.setScalar(0.60 / maxDim);
-    return c;
+    const s      = maxDim > 0 ? 0.60 / maxDim : 1;
+    return { clone: c, scale: s };
   }, [scene]);
 
+  const groupRef = useRef<THREE.Group>(null);
+
+  // Per-frame: track hand bone in world space
+  useFrame(() => {
+    if (!groupRef.current) return;
+
+    if (handBone) {
+      // Track the actual right hand bone → weapon follows animation perfectly
+      handBone.getWorldPosition(_wp);
+      handBone.getWorldQuaternion(_wq);
+      groupRef.current.position.copy(_wp);
+      groupRef.current.quaternion.copy(_wq);
+      // Small visual offset so gun grip aligns with palm
+      groupRef.current.quaternion.multiply(
+        _adj.setFromAxisAngle(_wu, Math.PI * 0.5)
+      );
+    } else if (fallbackGroup) {
+      // Fallback: fixed position at shoulder height
+      fallbackGroup.getWorldPosition(_wp);
+      groupRef.current.position.copy(_wp);
+      groupRef.current.position.y += 1.25;
+      groupRef.current.position.z -= 0.08;
+      groupRef.current.position.x += 0.15;
+      groupRef.current.rotation.set(-0.05, Math.PI, -0.05);
+    }
+  });
+
   return (
-    <group position={[0.14, 1.20, -0.02]} rotation={[-0.05, Math.PI, -0.05]}>
-      <primitive object={clone} />
+    <group ref={groupRef}>
+      <group scale={[weaponScale, weaponScale, weaponScale]}>
+        <primitive object={weaponClone} />
+      </group>
+      <MuzzleFlash active={shooting} />
     </group>
   );
 };
 
-// ── Individual remote player ───────────────────────────────────────────────────
-const RemotePlayerMesh = ({
-  player, charIdx,
-}: { player: RemotePlayerState; charIdx: number }) => {
-
+/* ─── Individual remote player ────────────────────────────────────────────────── */
+const RemotePlayerMesh = ({ player, charIdx }: { player: RemotePlayerState; charIdx: number }) => {
   const groupRef    = useRef<THREE.Group>(null);
   const animRef     = useRef<THREE.Group>(null);
+
   const bonesRef    = useRef<BoneSet | null>(null);
   const restRef     = useRef<RestPoses>(new Map());
+  const handBoneRef = useRef<THREE.Object3D | null>(null);
   const hasClipsRef = useRef(false);
 
-  const footWorldY  = (cy: number) => cy - FOOT_OFFSET;
+  const footWorldY = useCallback((cy: number) => cy - FOOT_OFFSET, []);
 
-  const targetPos   = useRef(new THREE.Vector3(
+  const targetPos  = useRef(new THREE.Vector3(
     player.position[0], footWorldY(player.position[1]), player.position[2],
   ));
-  const targetRotY  = useRef(player.rotation[1]);
+  const targetRotY = useRef(player.rotation[1]);
 
   const { scene, animations } = useGLTF(CHARACTER_MODELS[charIdx]) as {
     scene: THREE.Group;
     animations: THREE.AnimationClip[];
   };
 
-  // ── Clone: shares material refs → original colours preserved ─────────────
+  /* ── Clone: shares material refs → original colours/textures preserved ────── */
   const clonedScene = useMemo(() => {
     const clone = SkeletonUtils.clone(scene) as THREE.Group;
 
-    // 1. Scale to human height (1.75 m)
+    // 1. Scale to human height
     clone.updateMatrixWorld(true);
     const box1 = new THREE.Box3().setFromObject(clone);
     const h    = box1.getSize(new THREE.Vector3()).y;
     if (h > 0) clone.scale.setScalar(TARGET_HEIGHT / h);
 
-    // 2. Shift so feet are at local Y = 0 (applied to whole clone → no split body)
+    // 2. Shift so feet → local Y 0 (moves ALL children together → no split body)
     clone.updateMatrixWorld(true);
     const box2 = new THREE.Box3().setFromObject(clone);
     clone.position.y = -box2.min.y;
 
-    // 3. Tag meshes for raycast — do NOT clone/replace materials (keeps colours)
+    // 3. Tag meshes — do NOT touch materials (keeps original colours)
     clone.traverse(child => {
       const mesh = child as THREE.Mesh;
       if (!mesh.isMesh) return;
@@ -100,20 +153,20 @@ const RemotePlayerMesh = ({
     return clone;
   }, [scene, player.id]);
 
-  // ── After clone ready: capture rest poses + find bones ───────────────────
+  /* ── Setup: capture rest poses, find bones, find hand bone ───────────────── */
   useEffect(() => {
-    // Store rest quaternion for every bone BEFORE any animation starts
-    restRef.current = captureRestPoses(clonedScene);
-    bonesRef.current = findBones(clonedScene);
+    restRef.current     = captureRestPoses(clonedScene);
+    bonesRef.current    = findBones(clonedScene);
+    handBoneRef.current = findRightHandBone(clonedScene);
   }, [clonedScene]);
 
-  // ── Try GLB embedded animation clips ─────────────────────────────────────
+  /* ── GLB clip playback (used when model has embedded animations) ─────────── */
   const { actions } = useAnimations(animations, animRef);
 
   useEffect(() => {
     const clipNames = Object.keys(actions);
     hasClipsRef.current = clipNames.length > 0;
-    if (!hasClipsRef.current) return; // will use procedural below
+    if (!hasClipsRef.current) return;
 
     const find = (...kws: string[]) =>
       kws.reduce<string | undefined>(
@@ -137,22 +190,21 @@ const RemotePlayerMesh = ({
     return () => { next.fadeOut(0.2); };
   }, [player.action, actions]);
 
-  // ── Per-frame update ──────────────────────────────────────────────────────
+  /* ── Per-frame: procedural animation + smooth interpolation ──────────────── */
   useFrame(({ clock }, delta) => {
     if (!groupRef.current) return;
     const elapsed = clock.getElapsedTime();
 
-    // Procedural animation when no GLB clips (rest-pose-additive, never breaks rig)
+    // Rest-pose-additive procedural animation (safe for any GLB rig)
     if (!hasClipsRef.current && bonesRef.current && restRef.current.size > 0) {
       applyProceduralAnimation(
         bonesRef.current, player.action, elapsed, delta, restRef.current,
       );
     }
 
-    // Group-level Y-bob for movement feel
+    // Group-level bob (adds movement feel without touching bones)
     const bob = getMovementBob(player.action, elapsed);
 
-    // Smooth entity interpolation (XZ fast, Y includes bob)
     const al = Math.min(delta * 18, 1);
     groupRef.current.position.x = THREE.MathUtils.lerp(groupRef.current.position.x, targetPos.current.x, al);
     groupRef.current.position.z = THREE.MathUtils.lerp(groupRef.current.position.z, targetPos.current.z, al);
@@ -165,7 +217,7 @@ const RemotePlayerMesh = ({
       player.position[0], footWorldY(player.position[1]), player.position[2],
     );
     targetRotY.current = player.rotation[1];
-  }, [player.position, player.rotation]);
+  }, [player.position, player.rotation, footWorldY]);
 
   if (player.isDead) return null;
 
@@ -173,43 +225,45 @@ const RemotePlayerMesh = ({
   const hCol = hp > 0.5 ? '#2dc653' : hp > 0.25 ? '#f4a261' : '#e63946';
 
   return (
-    <group
-      ref={groupRef}
-      position={[player.position[0], footWorldY(player.position[1]), player.position[2]]}
-    >
-      {/* animRef wraps clonedScene — mixer finds all bones here */}
-      <group ref={animRef}>
-        <primitive object={clonedScene} />
+    <>
+      {/* Main character group */}
+      <group
+        ref={groupRef}
+        position={[player.position[0], footWorldY(player.position[1]), player.position[2]]}
+      >
+        <group ref={animRef}>
+          <primitive object={clonedScene} />
+        </group>
+
+        {/* Name tag + health bar (billboarded) */}
+        <Billboard follow position={[0, TARGET_HEIGHT + 0.42, 0]}>
+          <Text fontSize={0.15} color="#fff" anchorX="center" anchorY="bottom"
+            outlineWidth={0.012} outlineColor="#000" position={[0, 0.12, 0]}>
+            {player.name?.trim() || player.id.slice(0, 6).toUpperCase()}
+          </Text>
+          <mesh>
+            <planeGeometry args={[0.65, 0.065]} />
+            <meshBasicMaterial color="#111" transparent opacity={0.82} />
+          </mesh>
+          <mesh position={[-(0.325 - 0.65 * hp / 2), 0, 0.001]}>
+            <planeGeometry args={[0.65 * hp, 0.065]} />
+            <meshBasicMaterial color={hCol} />
+          </mesh>
+        </Billboard>
       </group>
 
-      <HandWeapon weaponIdx={player.weaponIdx} />
-
-      <Billboard follow position={[0, TARGET_HEIGHT + 0.42, 0]}>
-        <Text
-          fontSize={0.15}
-          color="#ffffff"
-          anchorX="center"
-          anchorY="bottom"
-          outlineWidth={0.012}
-          outlineColor="#000000"
-          position={[0, 0.12, 0]}
-        >
-          {player.name?.trim() || player.id.slice(0, 6).toUpperCase()}
-        </Text>
-        <mesh>
-          <planeGeometry args={[0.65, 0.065]} />
-          <meshBasicMaterial color="#111111" transparent opacity={0.82} />
-        </mesh>
-        <mesh position={[-(0.325 - 0.65 * hp / 2), 0, 0.001]}>
-          <planeGeometry args={[0.65 * hp, 0.065]} />
-          <meshBasicMaterial color={hCol} />
-        </mesh>
-      </Billboard>
-    </group>
+      {/* Weapon tracked to hand bone (scene-level so it can use world coords) */}
+      <WeaponAttachment
+        weaponIdx={player.weaponIdx ?? 0}
+        handBone={handBoneRef.current}
+        fallbackGroup={groupRef.current}
+        shooting={player.action === 'shooting'}
+      />
+    </>
   );
 };
 
-// ── Container ─────────────────────────────────────────────────────────────────
+/* ─── Container ───────────────────────────────────────────────────────────────── */
 export const RemotePlayers = () => {
   const remote = useNetworkStore(s => s.remotePlayers);
   return (
