@@ -105,7 +105,7 @@ export const Player = () => {
       colliders={false}
       mass={1}
       type="dynamic"
-      position={[0, 5, 0]}
+      position={[0, 3, 0]}
       enabledRotations={[false, false, false]}
       canSleep={false}
     >

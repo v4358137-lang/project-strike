@@ -1,45 +1,96 @@
-import { Suspense } from 'react';
+import { Suspense, useRef } from 'react';
 import { useGLTF } from '@react-three/drei';
-import { RigidBody } from '@react-three/rapier';
+import { RigidBody, MeshCollider } from '@react-three/rapier';
+import * as THREE from 'three';
 
 interface Props {
   mapUrl?: string;
 }
 
-// Fallback map if the user hasn't uploaded their GLB yet
-const FallbackMap = () => (
-  <RigidBody type="fixed" colliders="cuboid" position={[0, -0.5, 0]}>
+// Always-present solid floor so the player NEVER falls into the void
+const SolidFloor = () => (
+  <RigidBody type="fixed" colliders="cuboid" position={[0, -1, 0]} name="floor">
     <mesh receiveShadow>
-      <boxGeometry args={[100, 1, 100]} />
-      <meshStandardMaterial color="#1a1a1a" roughness={0.8} />
-    </mesh>
-    {/* Some basic obstacles */}
-    <mesh position={[5, 1, 5]} castShadow receiveShadow>
-      <boxGeometry args={[2, 2, 2]} />
-      <meshStandardMaterial color="#333" />
-    </mesh>
-    <mesh position={[-5, 2, -5]} castShadow receiveShadow>
-      <boxGeometry args={[4, 4, 4]} />
-      <meshStandardMaterial color="#333" />
+      <boxGeometry args={[500, 2, 500]} />
+      <meshStandardMaterial color="#1a1a1a" roughness={1} />
     </mesh>
   </RigidBody>
 );
 
+// Breaks the GLB scene into individual mesh colliders
+// This is far more reliable than a single trimesh on the whole scene
 const CustomMap = ({ mapUrl }: { mapUrl: string }) => {
   const { scene } = useGLTF(mapUrl);
-  
-  // Trimesh collider is perfect for complex static environments like maps
+  const meshes = useRef<THREE.Mesh[]>([]);
+
+  // Collect all meshes from the GLB
+  meshes.current = [];
+  scene.traverse((child) => {
+    if ((child as THREE.Mesh).isMesh) {
+      meshes.current.push(child as THREE.Mesh);
+    }
+  });
+
   return (
-    <RigidBody type="fixed" colliders="trimesh">
+    <>
+      {/* Render the scene normally for visuals */}
       <primitive object={scene} />
-    </RigidBody>
+
+      {/* Per-mesh hull colliders — much more reliable than whole-scene trimesh */}
+      {meshes.current.map((mesh, i) => {
+        // Get world position/rotation/scale of each mesh
+        const worldPos = new THREE.Vector3();
+        const worldQuat = new THREE.Quaternion();
+        const worldScale = new THREE.Vector3();
+        mesh.getWorldPosition(worldPos);
+        mesh.getWorldQuaternion(worldQuat);
+        mesh.getWorldScale(worldScale);
+
+        return (
+          <RigidBody
+            key={i}
+            type="fixed"
+            colliders={false}
+            position={[worldPos.x, worldPos.y, worldPos.z]}
+            quaternion={[worldQuat.x, worldQuat.y, worldQuat.z, worldQuat.w]}
+          >
+            <MeshCollider type="hull">
+              <mesh
+                geometry={mesh.geometry}
+                scale={[worldScale.x, worldScale.y, worldScale.z]}
+                visible={false}
+              />
+            </MeshCollider>
+          </RigidBody>
+        );
+      })}
+    </>
   );
 };
 
+// Fallback visible while GLB loads — a solid platform
+const LoadingFloor = () => (
+  <RigidBody type="fixed" colliders="cuboid" position={[0, 0, 0]}>
+    <mesh receiveShadow>
+      <boxGeometry args={[200, 1, 200]} />
+      <meshStandardMaterial color="#222" roughness={0.9} />
+    </mesh>
+  </RigidBody>
+);
+
 export const MapLoader = ({ mapUrl }: Props) => {
   return (
-    <Suspense fallback={null}>
-      {mapUrl ? <CustomMap mapUrl={mapUrl} /> : <FallbackMap />}
-    </Suspense>
+    <>
+      {/* Always present — absolute safety net against falling into void */}
+      <SolidFloor />
+
+      {mapUrl ? (
+        <Suspense fallback={<LoadingFloor />}>
+          <CustomMap mapUrl={mapUrl} />
+        </Suspense>
+      ) : (
+        <LoadingFloor />
+      )}
+    </>
   );
 };
